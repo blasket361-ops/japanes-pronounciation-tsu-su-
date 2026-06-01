@@ -1,1 +1,797 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>つ・す 発音判定ツール v12.3</title>
+<style>
+:root{
+  --bg:#f7f3ea;--card:#fffdf8;--ink:#2b2118;--muted:#756a5d;
+  --accent:#e67e22;--ok:#2e8b57;--bad:#b84a39;--line:#e2d7c8;
+  --closure:#9aa3ad;--burst:#ef6f3e;--fric:#37a779;--vowel:#f2c14e;--other:#c7b8a8;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,"Segoe UI","Hiragino Sans","Yu Gothic",sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:24px}
+h1{margin:0 0 8px;font-size:28px}
+h2{margin:0 0 12px;font-size:20px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:18px;margin:14px 0;box-shadow:0 2px 8px #0000000a}
+.small{font-size:13px;color:var(--muted);line-height:1.7}
+button{border:0;border-radius:14px;padding:12px 16px;font-weight:700;cursor:pointer;margin:4px;background:#2f2a24;color:white}
+button.secondary{background:#fff;color:var(--ink);border:1px solid var(--line)}
+button.warn{background:var(--bad)}
+button:disabled{opacity:.45;cursor:not-allowed}
+.tabs{display:flex;gap:8px;margin:18px 0}
+.tab{background:white;color:var(--ink);border:1px solid var(--line);border-radius:999px}
+.tab.active{background:var(--accent);color:white;border-color:var(--accent)}
+.hidden{display:none}
+.bigWord{text-align:center;font-size:56px;font-weight:900;letter-spacing:.08em;margin:10px 0}
+.pair{text-align:center;font-size:22px;color:var(--muted)}
+.result{font-size:21px;font-weight:800;padding:14px;border-radius:14px;background:white;border:1px solid var(--line)}
+.diagnosis{margin-top:12px;background:#fff;border:1px solid var(--line);border-radius:14px;padding:14px;font-size:15px;line-height:1.75}
+.diagnosis h3{font-size:17px;margin:8px 0 4px}
+.diagnosis ul{margin:6px 0 10px 1.2em;padding:0}
+.badge{display:inline-block;border-radius:999px;padding:3px 9px;margin-left:4px;font-size:12px;font-weight:800;background:#eee}
+.badge.ok{background:#dff2e7;color:#166534}
+.badge.warn{background:#fff0c2;color:#8a5a00}
+.badge.bad{background:#f8d7d2;color:#8a1f11}
+.ok{color:var(--ok)}.bad{color:var(--bad)}
+canvas{width:100%;height:310px;background:white;border:1px solid var(--line);border-radius:14px}
+.bar{height:64px;background:white;border:1px solid var(--line);border-radius:14px;display:flex;overflow:hidden}
+.seg{display:flex;align-items:center;justify-content:center;text-align:center;font-size:12px;font-weight:800;border-right:2px solid white;min-width:4px}
+.closure{background:var(--closure)}.burst{background:var(--burst)}.fric{background:var(--fric)}.vowel{background:var(--vowel)}.other{background:var(--other)}
+.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px}
+.metric{background:white;border:1px solid var(--line);border-radius:14px;padding:12px}
+.metric b{display:block;font-size:13px;color:var(--muted);margin-bottom:4px}
+.pill{display:inline-block;border-radius:999px;padding:4px 10px;background:#eee;margin:2px;font-size:12px}
 
+@media (max-width: 640px){
+  .wrap{padding:12px}
+  h1{font-size:22px}
+  h2{font-size:18px}
+  .card{padding:14px;border-radius:16px;margin:10px 0}
+  .tabs{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .tab{width:100%;padding:12px 8px;font-size:15px}
+  button{width:100%;margin:5px 0;padding:14px 12px;font-size:17px;border-radius:14px}
+  .bigWord{font-size:48px;margin:8px 0}
+  .pair{font-size:18px}
+  .result{font-size:18px;padding:12px}
+  .diagnosis{font-size:14px;padding:12px}
+  canvas{height:260px}
+  .bar{height:72px}
+  .seg{font-size:11px;line-height:1.25}
+  .metrics{grid-template-columns:1fr 1fr;gap:8px}
+  .metric{padding:10px;font-size:14px}
+  .small{font-size:12px}
+}
+
+@media (max-width: 380px){
+  .metrics{grid-template-columns:1fr}
+  .bigWord{font-size:42px}
+}
+
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>つ・す 発音判定ツール v12.3</h1>
+  <p class="small">v15-safe：過剰検出を避ける安全版です。録音後、無音が約0.8秒続くと自動停止し、自動判定します。分析表示は、録音全体ではなく、摩擦が強い対象音周辺に絞ります。</p>
+
+  <div class="tabs">
+    <button class="tab active" id="tabPractice">ミニマルペア練習</button>
+    <button class="tab" id="tabFree">自由録音</button>
+  </div>
+
+  <section id="practicePanel" class="card">
+    <div class="small">問題</div>
+    <div class="bigWord" id="targetWord">---</div>
+    <div class="pair" id="pairInfo"></div>
+    <div>
+      <button id="nextBtn">次の問題</button>
+      <button id="recordBtn">録音開始</button>
+      <button id="stopBtn" class="warn" disabled>手動停止</button>
+      <button id="retryBtn" class="secondary" disabled>同じ問題をやり直す</button>
+    </div>
+    <p id="status" class="small">「次の問題」を押してください。</p>
+    <div id="practiceResult" class="result hidden"></div>
+  </section>
+
+  <section id="freePanel" class="card hidden">
+    <h2>自由録音</h2>
+    <div>
+      <button id="freeRecordBtn">録音開始</button>
+      <button id="freeStopBtn" class="warn" disabled>手動停止</button>
+      <button id="freeRetryBtn" class="secondary" disabled>もう一度</button>
+    </div>
+    <p id="freeStatus" class="small">単独の「つ」「す」や単語を録音できます。</p>
+    <div id="freeResult" class="result hidden"></div>
+  </section>
+
+  <section class="card">
+    <h2>波形：対象音「つ／す」の推定範囲</h2>
+    <canvas id="waveCanvas" width="1200" height="430"></canvas>
+  </section>
+
+  <section class="card">
+    <h2>音の構造</h2>
+    <div class="bar" id="segmentBar"><div class="seg other" style="width:100%">録音後に表示</div></div>
+    <p class="small">
+      <span class="pill">灰色＝閉鎖/無音</span>
+      <span class="pill">橙＝破裂</span>
+      <span class="pill">緑＝摩擦</span>
+      <span class="pill">黄＝母音/有声部</span>
+      <span class="pill">茶＝その他</span>
+    </p>
+  </section>
+
+  <section class="card">
+    <h2>判定に使った数値</h2>
+    <div class="metrics">
+      <div class="metric"><b>閉鎖時間</b><span id="mClosure">-</span></div>
+      <div class="metric"><b>摩擦時間</b><span id="mFric">-</span></div>
+      <div class="metric"><b>閉鎖/摩擦比</b><span id="mRatio">-</span></div>
+      <div class="metric"><b>スペクトル重心</b><span id="mCentroid">-</span></div>
+      <div class="metric"><b>高域比率 5–9kHz</b><span id="mHigh">-</span></div>
+      <div class="metric"><b>破裂</b><span id="mBurst">-</span></div>
+      <div class="metric"><b>推定</b><span id="mGuess">-</span></div>
+    </div>
+  </section>
+</div>
+
+<script>
+"use strict";
+
+const pairs = [
+  {su:"すり", tsu:"つり", pos:"head"},
+  {su:"すぎ", tsu:"つぎ", pos:"head"},
+  {su:"すける", tsu:"つける", pos:"head"},
+  {su:"すかう", tsu:"つかう", pos:"head"},
+  {su:"なす", tsu:"なつ", pos:"tail"},
+  {su:"ます", tsu:"まつ", pos:"tail"},
+  {su:"かす", tsu:"かつ", pos:"tail"},
+  {su:"おす", tsu:"おつ", pos:"tail"},
+  {su:"たす", tsu:"たつ", pos:"tail"},
+  {su:"みす", tsu:"みつ", pos:"tail"}
+];
+
+const $ = id => document.getElementById(id);
+
+let mode = "practice";
+let current = null;
+let lastTwoTypes = [];
+let stream = null;
+let recorder = null;
+let chunks = [];
+let audioCtx = null;
+let analyser = null;
+let vadInterval = null;
+let heardVoice = false;
+let silenceStart = null;
+let activeKind = "practice";
+
+$("tabPractice").onclick = () => setMode("practice");
+$("tabFree").onclick = () => setMode("free");
+$("nextBtn").onclick = nextQuestion;
+$("recordBtn").onclick = () => startRecording("practice");
+$("stopBtn").onclick = () => stopRecording("manual");
+$("retryBtn").onclick = retryQuestion;
+$("freeRecordBtn").onclick = () => startRecording("free");
+$("freeStopBtn").onclick = () => stopRecording("manual");
+$("freeRetryBtn").onclick = () => startRecording("free");
+
+function setMode(m){
+  mode = m;
+  $("practicePanel").classList.toggle("hidden", m !== "practice");
+  $("freePanel").classList.toggle("hidden", m !== "free");
+  $("tabPractice").classList.toggle("active", m === "practice");
+  $("tabFree").classList.toggle("active", m === "free");
+
+  if(m === "practice" && !current){
+    nextQuestion();
+  }
+}
+
+function nextQuestion(){
+  let q = null;
+  for(let i=0;i<100;i++){
+    const p = pairs[Math.floor(Math.random()*pairs.length)];
+    const type = Math.random() < 0.5 ? "su" : "tsu";
+    if(lastTwoTypes.length >= 2 && lastTwoTypes[0] === type && lastTwoTypes[1] === type) continue;
+    q = {pair:p, type, word:p[type], expected:type};
+    break;
+  }
+  if(!q){
+    const p = pairs[Math.floor(Math.random()*pairs.length)];
+    q = {pair:p, type:"su", word:p.su, expected:"su"};
+  }
+  current = q;
+  lastTwoTypes.push(q.type);
+  if(lastTwoTypes.length > 2) lastTwoTypes.shift();
+
+  $("targetWord").textContent = q.word;
+  $("pairInfo").textContent = q.pair.su + " ／ " + q.pair.tsu;
+  $("status").textContent = "録音開始を押して、表示語を1回発音してください。";
+  $("practiceResult").classList.add("hidden");
+  $("retryBtn").disabled = true;
+  clearVisuals();
+}
+
+function retryQuestion(){
+  $("practiceResult").classList.add("hidden");
+  $("status").textContent = "同じ問題をもう一度録音してください。";
+  clearVisuals();
+}
+
+async function startRecording(kind){
+  activeKind = kind;
+  if(kind === "practice" && !current) nextQuestion();
+
+  try{
+    if(audioCtx && audioCtx.state === "suspended"){
+      await audioCtx.resume();
+    }
+    chunks = [];
+    heardVoice = false;
+    silenceStart = null;
+
+    if(!stream){
+      stream = await navigator.mediaDevices.getUserMedia({audio:true});
+    }
+
+    let options = {};
+    if(MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported("audio/webm")){
+      options = {mimeType:"audio/webm"};
+    }else if(MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported("audio/mp4")){
+      options = {mimeType:"audio/mp4"};
+    }
+    recorder = new MediaRecorder(stream, options);
+    recorder.ondataavailable = e => { if(e.data && e.data.size > 0) chunks.push(e.data); };
+    recorder.onstop = async () => {
+      stopVAD();
+      setRecordingButtons(false);
+      const blob = new Blob(chunks, {type: recorder.mimeType || "audio/webm"});
+      if(activeKind === "practice") $("status").textContent = "自動停止しました。判定中...";
+      else $("freeStatus").textContent = "自動停止しました。判定中...";
+      await analyzeBlob(blob, activeKind);
+    };
+
+    recorder.start();
+    setRecordingButtons(true);
+    startVAD();
+
+    if(kind === "practice"){
+      $("status").textContent = "録音中です。発音後、約0.8秒の無音で自動停止します。";
+      $("practiceResult").classList.add("hidden");
+    }else{
+      $("freeStatus").textContent = "録音中です。発音後、約0.8秒の無音で自動停止します。";
+      $("freeResult").classList.add("hidden");
+    }
+  }catch(err){
+    alert("マイクを開始できませんでした: " + err.message);
+  }
+}
+
+function setRecordingButtons(isRec){
+  $("recordBtn").disabled = isRec;
+  $("stopBtn").disabled = !isRec;
+  $("nextBtn").disabled = isRec;
+  $("freeRecordBtn").disabled = isRec;
+  $("freeStopBtn").disabled = !isRec;
+}
+
+function startVAD(){
+  audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+  const source = audioCtx.createMediaStreamSource(stream);
+  analyser = audioCtx.createAnalyser();
+  analyser.fftSize = 1024;
+  source.connect(analyser);
+
+  const buf = new Float32Array(analyser.fftSize);
+  const threshold = 0.018;
+  const silenceMs = 800;
+
+  stopVAD();
+  vadInterval = setInterval(() => {
+    if(!analyser) return;
+    analyser.getFloatTimeDomainData(buf);
+    let sum = 0;
+    for(const x of buf) sum += x*x;
+    const rms = Math.sqrt(sum / buf.length);
+    const now = performance.now();
+
+    if(rms > threshold){
+      heardVoice = true;
+      silenceStart = null;
+    }else if(heardVoice){
+      if(silenceStart === null) silenceStart = now;
+      if(now - silenceStart > silenceMs) stopRecording("auto");
+    }
+  }, 80);
+}
+
+function stopVAD(){
+  if(vadInterval) clearInterval(vadInterval);
+  vadInterval = null;
+}
+
+function stopRecording(reason){
+  stopVAD();
+  if(recorder && recorder.state === "recording") recorder.stop();
+}
+
+async function analyzeBlob(blob, kind){
+  try{
+    const arrayBuffer = await blob.arrayBuffer();
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
+    const samples = audioBuffer.getChannelData(0);
+    const sr = audioBuffer.sampleRate;
+
+    const framesAll = makeFrames(samples, sr);
+    const frames = trimFrames(framesAll);
+    if(frames.length < 3) throw new Error("音声が短すぎます");
+
+    const classifiedWhole = classifyFrames(frames);
+    const wholeSegments = mergeSegments(classifiedWhole);
+    const target = findTargetRange(wholeSegments, samples, sr);
+
+    const targetFramesRaw = frames.filter(f => f.start >= target.start && f.end <= target.end);
+    const targetFrames = targetFramesRaw.length ? targetFramesRaw : frames;
+    const classified = classifyFrames(targetFrames);
+    const segments = mergeSegments(classified);
+    const metrics = computeMetrics(samples, sr, segments);
+
+    drawWaveRegion(samples, sr, target.start, target.end);
+    drawSegments(segments);
+    showMetrics(metrics);
+
+    const guess = guessSuTsu(metrics, current?.pair?.pos || 'unknown');
+    $("mGuess").textContent = guess.label;
+
+    if(kind === "practice"){
+      const ok = (current.expected === "su" && guess.type === "su") || (current.expected === "tsu" && guess.type === "tsu");
+      const div = $("practiceResult");
+      div.classList.remove("hidden");
+      div.innerHTML = (ok
+        ? `<span class="ok">○ 正解寄り</span>：${guess.label}`
+        : `<span class="bad">△ 要確認</span>：${guess.label}`)
+        + buildDiagnosisHTML(guess, metrics);
+      $("status").textContent = "判定が終わりました。";
+      $("retryBtn").disabled = false;
+    }else{
+      const div = $("freeResult");
+      div.classList.remove("hidden");
+      div.innerHTML = "推定：" + guess.label + buildDiagnosisHTML(guess, metrics);
+      $("freeStatus").textContent = "判定が終わりました。";
+      $("freeRetryBtn").disabled = false;
+    }
+  }catch(err){
+    console.error(err);
+    const msg = "解析エラー：" + (err.message || err);
+    if(kind === "practice"){
+      $("status").textContent = msg;
+      $("retryBtn").disabled = false;
+    }else{
+      $("freeStatus").textContent = msg;
+    }
+  }
+}
+
+function makeFrames(samples, sr){
+  const frameMs = 10;
+  const size = Math.max(128, Math.floor(sr * frameMs / 1000));
+  const frames = [];
+  for(let i=0; i+size<samples.length; i+=size){
+    let energy = 0, zc = 0;
+    for(let j=0;j<size;j++){
+      const x = samples[i+j];
+      energy += x*x;
+      if(j>0 && Math.sign(samples[i+j]) !== Math.sign(samples[i+j-1])) zc++;
+    }
+    energy = Math.sqrt(energy / size);
+    frames.push({start:i/sr, end:(i+size)/sr, i0:i, i1:i+size, energy, zcr:zc/size, en:0, label:"other"});
+  }
+  const maxE = Math.max(...frames.map(f=>f.energy), 1e-9);
+  frames.forEach(f => f.en = f.energy / maxE);
+  return frames;
+}
+
+function trimFrames(frames){
+  const active = frames.filter(f => f.en > 0.05);
+  if(!active.length) return frames;
+  const first = frames.indexOf(active[0]);
+  const last = frames.indexOf(active[active.length-1]);
+  return frames.slice(Math.max(0, first-10), Math.min(frames.length, last+3));
+}
+
+function classifyFrames(frames){
+  // まず通常分類
+  const base = frames.map(f => {
+    if(f.en < 0.035) return {...f, label:"closure"};
+    if(f.zcr > 0.11 && f.en > 0.06) return {...f, label:"fric"};
+    if(f.zcr < 0.08 && f.en > 0.12) return {...f, label:"vowel"};
+    return {...f, label:"other"};
+  });
+
+  // 破裂検出：
+  // 「閉鎖/低エネルギー」直後に、短く強い・高ZCRのフレームが出た場合を burst とする。
+  // 破裂は普通 10〜30ms 程度なので、連続しすぎる場合は摩擦として残す。
+  for(let i=1; i<base.length-1; i++){
+    const prev = base[i-1];
+    const cur = base[i];
+    const next = base[i+1];
+
+    const afterClosure = prev.label === "closure" || (i>=2 && base[i-2].label === "closure");
+    const suddenRise = cur.en > Math.max(0.08, prev.en * 1.6);
+    const noisy = cur.zcr > 0.055;
+    const shortBeforeFric = next.label === "fric" || next.zcr > 0.085;
+
+    if(afterClosure && suddenRise && noisy && shortBeforeFric){
+      cur.label = "burst";
+    }
+  }
+
+  // burst が2フレーム以上続いたら、最初だけ burst、残りは摩擦に戻す。
+  for(let i=1; i<base.length; i++){
+    if(base[i-1].label === "burst" && base[i].label === "burst"){
+      base[i].label = "fric";
+    }
+  }
+
+  return base;
+}
+
+function mergeSegments(frames){
+  const segs = [];
+  for(const f of frames){
+    const last = segs[segs.length-1];
+    if(!last || last.label !== f.label){
+      segs.push({label:f.label, start:f.start, end:f.end, frames:[f]});
+    }else{
+      last.end = f.end;
+      last.frames.push(f);
+    }
+  }
+  const merged = [];
+  for(const s of segs){
+    const dur = s.end - s.start;
+    if(dur < 0.02 && merged.length){
+      merged[merged.length-1].end = s.end;
+      merged[merged.length-1].frames.push(...s.frames);
+    }else{
+      merged.push(s);
+    }
+  }
+  return merged;
+}
+
+function findTargetRange(segments, samples, sr){
+  const frics = segments.filter(s => s.label === "fric");
+  if(!frics.length) return {start:0, end:samples.length/sr};
+
+  let best = frics[0], bestScore = -1;
+  for(const s of frics){
+    const dur = s.end - s.start;
+    const avg = s.frames.reduce((a,f)=>a+f.en,0) / Math.max(1, s.frames.length);
+    const score = dur * avg;
+    if(score > bestScore){ best = s; bestScore = score; }
+  }
+
+  const idx = segments.indexOf(best);
+
+  // 開始：
+  // 摩擦の直前に burst があれば burst から。
+  // その前に closure があれば closure も含める。
+  let start = best.start;
+  if(idx > 0){
+    const prev = segments[idx-1];
+    if(prev.label === "burst"){
+      start = prev.start;
+      if(idx > 1 && segments[idx-2].label === "closure"){
+        start = Math.max(segments[idx-2].start, prev.start - 0.09);
+      }
+    }else if(prev.label === "closure"){
+      start = Math.max(prev.start, best.start - 0.09);
+    }else if(prev.label === "other" && (prev.end - prev.start) <= 0.04){
+      start = prev.start;
+    }
+  }
+
+  // 終了：後続母音/弱い部分は最大30msだけ。
+  let end = best.end;
+  if(idx < segments.length-1){
+    const next = segments[idx+1];
+    if(next.label === "vowel" || next.label === "other"){
+      end = Math.min(next.end, best.end + 0.03);
+    }
+  }
+
+  if(end - start < 0.06) end = Math.min(samples.length/sr, start + 0.06);
+  return {start, end};
+}
+
+function computeMetrics(samples, sr, segments){
+  const frics = segments.filter(s => s.label === "fric");
+  let fricSeg = frics[0] || null;
+  if(frics.length){
+    fricSeg = frics.reduce((a,b) => (b.end-b.start) > (a.end-a.start) ? b : a);
+  }
+
+  let closure = 0;
+  let burst = 0;
+  let burstLike = false;
+  let weakBurst = false;
+  let onsetRise = 0;
+
+  if(fricSeg){
+    const idx = segments.indexOf(fricSeg);
+
+    // 摩擦直前の burst を独立して数える
+    if(idx > 0 && segments[idx-1].label === "burst"){
+      burst = segments[idx-1].end - segments[idx-1].start;
+      burstLike = true;
+    }
+
+    // burst のさらに前に closure があれば閉鎖として数える。
+    // burst がない場合は、摩擦直前までの closure/other を閉鎖候補とする。
+    const limit = burstLike ? idx-1 : idx;
+    for(let i=0;i<limit;i++){
+      if(segments[i].label === "closure") closure += segments[i].end - segments[i].start;
+    }
+
+    // 摩擦開始直後の立ち上がりも補助特徴として残す
+    const fs = fricSeg.frames || [];
+    if(fs.length >= 3){
+      const first = fs.slice(0,2).reduce((a,f)=>a+f.en,0) / Math.min(2, fs.length);
+      const later = fs.slice(2).reduce((a,f)=>a+f.en,0) / Math.max(1, fs.length-2);
+      onsetRise = later > 0 ? first / later : first > 0 ? 9 : 0;
+      if(onsetRise >= 1.35) burstLike = true;
+      if(onsetRise >= 1.12) weakBurst = true;
+    }
+  }
+
+  const fric = fricSeg ? fricSeg.end - fricSeg.start : 0;
+  const ratio = fric ? closure / fric : 0;
+
+  let centroid = 0, highRatio = 0;
+  if(fricSeg){
+    const i0 = Math.max(0, Math.floor(fricSeg.start * sr));
+    const i1 = Math.min(samples.length, Math.floor(fricSeg.end * sr));
+    const spec = spectrumSummary(samples.slice(i0, i1), sr);
+    centroid = spec.centroid;
+    highRatio = spec.highRatio;
+  }
+
+  return {closure, burst, fric, ratio, centroid, highRatio, burstLike, weakBurst, burstMs: burst*1000, onsetRise};
+}
+
+function spectrumSummary(x, sr){
+  const N = 1024; // v7は安定優先で軽くする
+  const buf = new Float32Array(N);
+  for(let i=0;i<N;i++){
+    const w = 0.5 - 0.5 * Math.cos(2*Math.PI*i/(N-1));
+    buf[i] = (x[i] || 0) * w;
+  }
+  const mags = dftMagnitude(buf);
+  let total=0, weighted=0, high=0;
+  for(let k=1;k<mags.length;k++){
+    const freq = k*sr/N;
+    if(freq < 1000 || freq > 9000) continue;
+    const m = mags[k];
+    total += m;
+    weighted += freq * m;
+    if(freq >= 5000 && freq <= 9000) high += m;
+  }
+  return {centroid: total ? weighted/total : 0, highRatio: total ? high/total : 0};
+}
+
+function dftMagnitude(x){
+  const N = x.length, half = N/2;
+  const mags = new Float32Array(half);
+  for(let k=0;k<half;k++){
+    let re=0, im=0;
+    for(let n=0;n<N;n++){
+      const a = -2*Math.PI*k*n/N;
+      re += x[n] * Math.cos(a);
+      im += x[n] * Math.sin(a);
+    }
+    mags[k] = Math.sqrt(re*re + im*im);
+  }
+  return mags;
+}
+
+function guessSuTsu(m, pos){
+  const c = m.closure * 1000;
+  const b = (m.burst || 0) * 1000;
+  const f = m.fric * 1000;
+  const hasClosure = c >= 10;
+  const hasClearClosure = c >= 18;
+  const hasBurst = b >= 5 || m.burstLike || m.weakBurst || (m.onsetRise && m.onsetRise >= 1.20);
+
+  if(f < 18){
+    return {type:"unknown", label:"判定不能：摩擦が短すぎる、またはマイクで弱く録音されています", pos};
+  }
+
+  // 安全版：
+  // 「つ」と判定するには、閉鎖または破裂が必要。
+  // 摩擦時間だけでは「つ」と判定しない。
+  if(pos === "head"){
+    if((hasClosure || hasBurst) && f <= 180){
+      return {type:"tsu", label:`つ寄り（語頭：閉鎖 ${Math.round(c)}ms・破裂 ${Math.round(b)}ms・摩擦 ${Math.round(f)}ms）`, pos};
+    }
+    if((hasClosure || hasBurst) && f > 180){
+      return {type:"ssu", label:`っす寄り（語頭：閉鎖/破裂あり・摩擦長め ${Math.round(f)}ms）`, pos};
+    }
+    return {type:"su", label:`す寄り（語頭：閉鎖と破裂が検出されません・摩擦 ${Math.round(f)}ms）`, pos};
+  }
+
+  if(pos === "tail"){
+    // 語末は母音無声化を認める。ただし閉鎖がないなら「つ」にしない。
+    if(hasClosure && f <= 180){
+      return {type:"tsu", label:`つ寄り（語末：閉鎖 ${Math.round(c)}ms・破裂 ${Math.round(b)}ms・摩擦 ${Math.round(f)}ms）`, pos};
+    }
+    if(hasClosure && f > 180){
+      return {type:"ssu", label:`っす寄り（語末：閉鎖あり・摩擦長め ${Math.round(f)}ms）`, pos};
+    }
+    return {type:"su", label:`す寄り（語末：閉鎖が検出されません・摩擦 ${Math.round(f)}ms）`, pos};
+  }
+
+  if((hasClosure || hasBurst) && f <= 170){
+    return {type:"tsu", label:`つ寄り（閉鎖 ${Math.round(c)}ms・破裂 ${Math.round(b)}ms・摩擦 ${Math.round(f)}ms）`, pos};
+  }
+  if((hasClosure || hasBurst) && f > 170){
+    return {type:"ssu", label:`っす寄り（閉鎖/破裂あり・摩擦長め ${Math.round(f)}ms）`, pos};
+  }
+  return {type:"su", label:`す寄り（閉鎖と破裂が検出されません・摩擦 ${Math.round(f)}ms）`, pos};
+}
+
+function assessClosure(ms){
+  if(ms < 18) return {label:"不足", cls:"bad"};
+  if(ms < 30) return {label:"やや短い", cls:"warn"};
+  if(ms <= 90) return {label:"正常", cls:"ok"};
+  return {label:"長め", cls:"warn"};
+}
+
+function assessFrication(ms){
+  if(ms < 35) return {label:"短い", cls:"warn"};
+  if(ms <= 120) return {label:"正常", cls:"ok"};
+  if(ms <= 160) return {label:"やや長い", cls:"warn"};
+  return {label:"長すぎる", cls:"bad"};
+}
+
+function badge(a){
+  return `<span class="badge ${a.cls}">${a.label}</span>`;
+}
+
+function buildDiagnosisHTML(guess, m){
+  const closureMs = Math.round(m.closure * 1000);
+  const fricMs = Math.round(m.fric * 1000);
+  const ratio = m.fric ? m.ratio.toFixed(2) : "-";
+  const closureEval = assessClosure(closureMs);
+  const fricEval = assessFrication(fricMs);
+  const isTail = guess.pos === "tail";
+
+  let explanation = "";
+  let advice = "";
+  let headNote = guess.pos === "head" ? `<p><b>語頭の注意：</b>「つり」のような語頭では、閉鎖は録音前の無音と区別しにくいことがあります。そのため、摩擦時間だけでなく、破裂や摩擦の立ち上がりも見ています。</p>` : "";
+  let burstWarn = (guess.pos === "head" && !(m.burstMs >= 5 || m.burstLike)) ? `<p><b>破裂の注意：</b>語頭の「つ」では、閉鎖のあとに短い破裂が出ることが重要です。今回、破裂は弱い、または十分に検出されていません。</p>` : "";
+  let tailNote = isTail
+    ? `<p><b>語末の注意：</b>「ます」「まつ」のような語末では、母音「う」が無声化して、ほとんど聞こえないことがあります。この場合、母音が弱い、または無いことは正常です。この問題では母音よりも、閉鎖と摩擦を中心に判定しています。</p>`
+    : "";
+
+  if(guess.type === "tsu"){
+    explanation = isTail
+      ? `語末の「つ」は、母音が弱くても、摩擦の前に閉鎖があれば「つ」らしく聞こえます。今回の発音では閉鎖が検出されたため、「つ」に近いと判断しました。`
+      : `「つ」は、舌で一度空気を止める閉鎖のあとに、短い摩擦が続く音です。今回の発音では閉鎖が検出され、摩擦も長すぎないため、「つ」に近いと判断しました。`;
+    advice = closureMs < 30
+      ? `閉鎖が少し短めです。舌先を上の歯ぐきにつけて、一瞬だけ空気を止める感覚を強めてください。`
+      : `かなり良い発音です。閉鎖のあとに「ssss」と長く伸ばさず、短く出してください。`;
+  } else if(guess.type === "su"){
+    explanation = isTail
+      ? `語末の「す」は母音が無声化しやすいので、最後は「s」だけのように聞こえることがあります。今回の発音では「つ」に必要な閉鎖がほとんど検出されなかったため、「す」に近いと判断しました。`
+      : `「す」は、最初から摩擦が始まる音です。今回の発音では、「つ」に必要な閉鎖がほとんど検出されませんでした。そのため「す」に近いと判断しました。`;
+    advice = `「つ」を言いたい場合は、まず舌先を上の歯ぐきにつけて、空気を一瞬止めてください。そのあと、短く「ツ」と出します。「ス」を長く出さないようにしましょう。`;
+  } else if(guess.type === "ssu"){
+    explanation = `閉鎖は検出されていますが、その後の摩擦が長く続いています。そのため、普通の「つ」よりも「っす」に近い発音と判断しました。`;
+    advice = `閉鎖はできています。次は、閉鎖の後の「ssss」の時間を短くしてください。「ッス」ではなく、素早く「ツ」と言う練習をしましょう。`;
+  } else {
+    explanation = isTail
+      ? `語末の摩擦が非常に短い、または弱いため、十分に分析できませんでした。語末では母音が無声化しても正常ですが、摩擦そのものは少し必要です。`
+      : `摩擦や閉鎖の特徴が十分に取れなかったため、はっきり判定できませんでした。`;
+    advice = `マイクに近づき、1語だけをはっきり発音してください。周囲の雑音も少なくしてください。`;
+  }
+
+  return `
+    <div class="diagnosis">
+      <h3>理由</h3>
+      <ul>
+        <li>閉鎖時間：${closureMs}ms ${badge(closureEval)}</li>
+        <li>摩擦時間：${fricMs}ms ${badge(fricEval)}</li>
+        <li>破裂：${m.burstMs && m.burstMs >= 5 ? Math.round(m.burstMs) + "ms" : (m.burstLike ? "あり" : "弱い")}</li>
+        <li>閉鎖/摩擦比：${ratio}</li>
+        <li>破裂/立ち上がり：${m.burstLike ? "あり" : "弱い"} ${m.onsetRise ? `（立ち上がり比 ${m.onsetRise.toFixed(2)}）` : ""}</li>
+      </ul>
+      ${tailNote}
+      ${headNote}
+      ${burstWarn}
+      <h3>解説</h3>
+      <p>${explanation}</p>
+      <h3>改善アドバイス</h3>
+      <p>${advice}</p>
+    </div>`;
+}
+
+function drawWaveRegion(samples, sr, startSec, endSec){
+  const c = $("waveCanvas"), g = c.getContext("2d");
+  g.clearRect(0,0,c.width,c.height);
+  g.fillStyle="#fff"; g.fillRect(0,0,c.width,c.height);
+  const i0 = Math.max(0, Math.floor(startSec*sr));
+  const i1 = Math.min(samples.length, Math.floor(endSec*sr));
+  const region = samples.slice(i0, i1);
+  const mid = c.height / 2;
+
+  g.strokeStyle="#e2d7c8"; g.lineWidth=1;
+  g.beginPath(); g.moveTo(0,mid); g.lineTo(c.width,mid); g.stroke();
+
+  if(!region.length) return;
+
+  let peak = 0;
+  for(const v of region) peak = Math.max(peak, Math.abs(v));
+  const gain = Math.min(10, Math.max(1.8, 0.9/(peak || 0.001)));
+
+  g.strokeStyle="#2b2118"; g.lineWidth=1.5;
+  g.beginPath();
+  const step = Math.max(1, Math.ceil(region.length / c.width));
+  for(let x=0;x<c.width;x++){
+    let min=1,max=-1;
+    for(let j=0;j<step;j++){
+      const v = (region[x*step+j] || 0) * gain;
+      if(v<min) min=v;
+      if(v>max) max=v;
+    }
+    min = Math.max(-1, min); max = Math.min(1, max);
+    g.moveTo(x, mid + min*mid*0.94);
+    g.lineTo(x, mid + max*mid*0.94);
+  }
+  g.stroke();
+
+  g.fillStyle="#756a5d";
+  g.font="16px system-ui";
+  g.fillText("対象音推定範囲のみ表示（縦方向を自動拡大）", 14, 26);
+}
+
+function drawSegments(segs){
+  const bar = $("segmentBar");
+  if(!segs.length){
+    bar.innerHTML = '<div class="seg other" style="width:100%">なし</div>';
+    return;
+  }
+  const total = segs[segs.length-1].end - segs[0].start || 1;
+  const label = {closure:"閉鎖", burst:"破裂", fric:"摩擦", vowel:"母音", other:"その他"};
+  bar.innerHTML = segs.map(s => {
+    const w = Math.max(2, (s.end-s.start)/total*100);
+    const ms = Math.round((s.end-s.start)*1000);
+    return `<div class="seg ${s.label}" style="width:${w}%">${label[s.label]}<br>${ms}ms</div>`;
+  }).join("");
+}
+
+function showMetrics(m){
+  $("mClosure").textContent = Math.round(m.closure*1000) + " ms";
+  $("mFric").textContent = Math.round(m.fric*1000) + " ms";
+  $("mRatio").textContent = m.fric ? m.ratio.toFixed(2) : "-";
+  $("mCentroid").textContent = m.centroid ? Math.round(m.centroid) + " Hz" : "-";
+  $("mHigh").textContent = m.highRatio ? Math.round(m.highRatio*100) + " %" : "-";
+  $("mBurst").textContent = (m.burstMs && m.burstMs >= 5) ? Math.round(m.burstMs) + " ms" : (m.burstLike ? "あり" : (m.weakBurst ? "弱い" : "検出なし"));
+}
+
+function clearVisuals(){
+  const c = $("waveCanvas"), g = c.getContext("2d");
+  g.clearRect(0,0,c.width,c.height);
+  $("segmentBar").innerHTML = '<div class="seg other" style="width:100%">録音後に表示</div>';
+  ["mClosure","mFric","mRatio","mCentroid","mHigh","mBurst","mGuess"].forEach(id => $(id).textContent = "-");
+}
+
+window.addEventListener('load', ()=>{ if(!current) nextQuestion(); });
+</script>
+</body>
+</html>
