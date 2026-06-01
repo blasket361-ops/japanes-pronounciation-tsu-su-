@@ -75,7 +75,7 @@ canvas{width:100%;height:310px;background:white;border:1px solid var(--line);bor
 <body>
 <div class="wrap">
   <h1>つ・す 発音判定ツール v12.3</h1>
-  <p class="small">v17-burst：破裂を主役にして、閉鎖だけでは「つ」と判定しない版です。録音後、無音が約0.8秒続くと自動停止し、自動判定します。分析表示は、録音全体ではなく、摩擦が強い対象音周辺に絞ります。</p>
+  <p class="small">v18-position：出題語の位置情報を使って対象音を探す版です。録音後、無音が約0.8秒続くと自動停止し、自動判定します。分析表示は、録音全体ではなく、摩擦が強い対象音周辺に絞ります。</p>
 
   <div class="tabs">
     <button class="tab active" id="tabPractice">ミニマルペア練習</button>
@@ -151,7 +151,9 @@ const pairs = [
   {su:"かす", tsu:"かつ", pos:"tail"},
   {su:"おす", tsu:"おつ", pos:"tail"},
   {su:"たす", tsu:"たつ", pos:"tail"},
-  {su:"みす", tsu:"みつ", pos:"tail"}
+  {su:"みす", tsu:"みつ", pos:"tail"},
+  {su:"あすい", tsu:"あつい", pos:"middle"},
+  {su:"ますり", tsu:"まつり", pos:"middle"}
 ];
 
 const $ = id => document.getElementById(id);
@@ -333,7 +335,7 @@ async function analyzeBlob(blob, kind){
 
     const classifiedWhole = classifyFrames(frames);
     const wholeSegments = mergeSegments(classifiedWhole);
-    const target = findTargetRange(wholeSegments, samples, sr);
+    const target = findTargetRangeByPosition(wholeSegments, samples, sr, current?.pair?.pos || "unknown");
 
     const targetFramesRaw = frames.filter(f => f.start >= target.start && f.end <= target.end);
     const targetFrames = targetFramesRaw.length ? targetFramesRaw : frames;
@@ -405,38 +407,33 @@ function trimFrames(frames){
 }
 
 function classifyFrames(frames){
-  // v17-burst:
-  // 閉鎖だけでは「つ」としない。
-  // 破裂は「低エネルギー/その他の直後に、短く鋭い高域・ZCR成分が出て、その後に摩擦が続く」ものとする。
   const base = frames.map(f => {
-    // 閉鎖はかなり静かな区間だけに限定する。
     if(f.en < 0.045) return {...f, label:"closure"};
 
-    const zcrFric = f.zcr > 0.075 && f.en > 0.030;
-    const highLike = (f.hp || 0) > 0.50 && f.en > 0.030;
-    if(zcrFric || highLike) return {...f, label:"fric"};
+    const zcrFric = f.zcr > 0.07 && f.en > 0.025;
+    const hpFric = (f.hp || 0) > 0.50 && f.en > 0.025;
+    if(zcrFric || hpFric) return {...f, label:"fric"};
 
     if(f.zcr < 0.08 && f.en > 0.12) return {...f, label:"vowel"};
     return {...f, label:"other"};
   });
 
-  // 破裂検出：fric の直前1〜2フレームにある鋭いスパイクを burst にする。
+  // burst: 静かな区間の直後、短いスパイク、その後に摩擦候補
   for(let i=1; i<base.length-1; i++){
     const prev = base[i-1];
     const cur = base[i];
     const next = base[i+1];
 
-    const beforeWasQuiet = prev.label === "closure" || prev.en < 0.09 || (i>=2 && base[i-2].label === "closure");
-    const spikeEnergy = cur.en > Math.max(0.09, prev.en * 1.7);
-    const spikeNoise = cur.zcr > 0.065 || (cur.hp || 0) > 0.45;
-    const followedByFric = next.label === "fric" || (next.zcr > 0.07 && next.en > 0.025) || ((next.hp || 0) > 0.45 && next.en > 0.025);
+    const beforeQuiet = prev.label === "closure" || prev.en < 0.08 || (i>=2 && base[i-2].label === "closure");
+    const spike = cur.en > Math.max(0.08, prev.en * 1.55);
+    const noisy = cur.zcr > 0.055 || (cur.hp || 0) > 0.42;
+    const followedByFric = next.label === "fric" || next.zcr > 0.065 || (next.hp || 0) > 0.42;
 
-    if(beforeWasQuiet && spikeEnergy && spikeNoise && followedByFric){
+    if(beforeQuiet && spike && noisy && followedByFric){
       cur.label = "burst";
     }
   }
 
-  // burst が長く続くなら、最初だけ burst、残りは fric
   for(let i=1; i<base.length; i++){
     if(base[i-1].label === "burst" && base[i].label === "burst"){
       base[i].label = "fric";
@@ -470,6 +467,56 @@ function mergeSegments(frames){
   return merged;
 }
 
+function findTargetRangeByPosition(segments, samples, sr, pos){
+  // v18-position:
+  // 出題語の位置情報を使う。
+  // head: 録音開始後に最初に現れる摩擦候補を見る。
+  // middle/tail: 最初の母音の後に現れる最初の摩擦候補を見る。
+  const frics = segments.filter(s => s.label === "fric");
+  if(!frics.length) return {start:0, end:samples.length/sr};
+
+  let candidate = null;
+
+  if(pos === "head"){
+    // 語頭は「最初の摩擦候補」。最強の摩擦ではない。
+    candidate = frics[0];
+  }else{
+    // 語中・語末は、最初の母音の後に出る最初の摩擦候補。
+    const firstVowel = segments.find(s => s.label === "vowel");
+    if(firstVowel){
+      candidate = frics.find(s => s.start >= firstVowel.end - 0.01) || frics[0];
+    }else{
+      candidate = frics[0];
+    }
+  }
+
+  const idx = segments.indexOf(candidate);
+  let start = candidate.start;
+
+  // 直前の burst/closure を含める
+  if(idx > 0 && segments[idx-1].label === "burst"){
+    start = segments[idx-1].start;
+    if(idx > 1 && segments[idx-2].label === "closure"){
+      start = Math.max(segments[idx-2].start, start - 0.08);
+    }
+  }else if(idx > 0 && segments[idx-1].label === "closure"){
+    start = Math.max(segments[idx-1].start, candidate.start - 0.08);
+  }else if(idx > 0 && segments[idx-1].label === "other" && (segments[idx-1].end - segments[idx-1].start) <= 0.035){
+    start = segments[idx-1].start;
+  }
+
+  let end = candidate.end;
+  if(idx < segments.length-1){
+    const next = segments[idx+1];
+    if(next.label === "vowel" || next.label === "other"){
+      end = Math.min(next.end, candidate.end + 0.03);
+    }
+  }
+
+  if(end - start < 0.06) end = Math.min(samples.length/sr, start + 0.06);
+  return {start, end};
+}
+
 function findTargetRange(segments, samples, sr){
   const frics = segments.filter(s => s.label === "fric");
   if(!frics.length) return {start:0, end:samples.length/sr};
@@ -484,17 +531,25 @@ function findTargetRange(segments, samples, sr){
 
   const idx = segments.indexOf(best);
 
+  // 開始：
+  // 摩擦の直前に burst があれば burst から。
+  // その前に closure があれば closure も含める。
   let start = best.start;
-  if(idx > 0 && segments[idx-1].label === "burst"){
-    start = segments[idx-1].start;
-    if(idx > 1 && segments[idx-2].label === "closure"){
-      start = Math.max(segments[idx-2].start, start - 0.08);
+  if(idx > 0){
+    const prev = segments[idx-1];
+    if(prev.label === "burst"){
+      start = prev.start;
+      if(idx > 1 && segments[idx-2].label === "closure"){
+        start = Math.max(segments[idx-2].start, prev.start - 0.09);
+      }
+    }else if(prev.label === "closure"){
+      start = Math.max(prev.start, best.start - 0.09);
+    }else if(prev.label === "other" && (prev.end - prev.start) <= 0.04){
+      start = prev.start;
     }
-  }else if(idx > 0 && segments[idx-1].label === "closure"){
-    // burstなしの閉鎖は表示には含めるが、判定ではつの主根拠にしない
-    start = Math.max(segments[idx-1].start, best.start - 0.08);
   }
 
+  // 終了：後続母音/弱い部分は最大30msだけ。
   let end = best.end;
   if(idx < segments.length-1){
     const next = segments[idx+1];
@@ -504,14 +559,15 @@ function findTargetRange(segments, samples, sr){
   }
 
   if(end - start < 0.06) end = Math.min(samples.length/sr, start + 0.06);
-  return {start,end};
+  return {start, end};
 }
 
 function computeMetrics(samples, sr, segments){
   const frics = segments.filter(s => s.label === "fric");
   let fricSeg = frics[0] || null;
   if(frics.length){
-    fricSeg = frics.reduce((a,b) => (b.end-b.start) > (a.end-a.start) ? b : a);
+    // ここでは切り出し済み範囲内の最初の摩擦を見る。
+    fricSeg = frics[0];
   }
 
   let closure = 0;
@@ -523,26 +579,22 @@ function computeMetrics(samples, sr, segments){
   if(fricSeg){
     const idx = segments.indexOf(fricSeg);
 
-    // 摩擦直前の burst のみ破裂として数える
     if(idx > 0 && segments[idx-1].label === "burst"){
       burst = segments[idx-1].end - segments[idx-1].start;
       burstLike = burst >= 0.004;
     }
 
-    // 閉鎖は「burst または fric の直前に隣接する closure」のみ数える。
-    // すぎ・みす等の語中の弱まりを閉鎖と誤認しにくくする。
-    const beforeIdx = burstLike ? idx - 2 : idx - 1;
-    if(beforeIdx >= 0 && segments[beforeIdx].label === "closure"){
-      closure = Math.min(segments[beforeIdx].end - segments[beforeIdx].start, 0.08);
+    // 閉鎖は対象摩擦の直前に隣接するものだけ。
+    const closureIdx = burstLike ? idx - 2 : idx - 1;
+    if(closureIdx >= 0 && segments[closureIdx].label === "closure"){
+      closure = Math.min(segments[closureIdx].end - segments[closureIdx].start, 0.08);
     }
 
-    // 破裂が明示的に取れない場合の補助：摩擦の最初が急に強いか
     const fs = fricSeg.frames || [];
     if(fs.length >= 3){
       const first = fs.slice(0,2).reduce((a,f)=>a+f.en,0) / Math.min(2, fs.length);
       const later = fs.slice(2).reduce((a,f)=>a+f.en,0) / Math.max(1, fs.length-2);
       onsetRise = later > 0 ? first / later : first > 0 ? 9 : 0;
-      // ただし、これは「弱い破裂」扱い。単独では「つ」判定の主根拠にはしない。
       if(onsetRise >= 1.45 && closure >= 0.010) weakBurst = true;
     }
   }
@@ -607,13 +659,12 @@ function guessSuTsu(m, pos){
   const hasWeakBurstWithClosure = m.weakBurst && hasClosure;
 
   if(f < 18){
-    return {type:"unknown", label:"判定不能：摩擦が短すぎる、またはマイクで弱く録音されています", pos};
+    return {type:"unknown", label:"判定不能：対象位置に摩擦が十分検出されません", pos};
   }
 
-  // 語頭・語中・語末とも、スマホ版では「破裂」をつ判定の主根拠にする。
-  // 閉鎖だけでは「つ」としない。これは「すぎ→つぎ」「っす→つ」の誤判定を減らすため。
+  // 「つ」は破裂を主根拠にする。閉鎖だけでは「つ」としない。
   if(hasBurst && f <= 180){
-    return {type:"tsu", label:`つ寄り（破裂 ${Math.round(b)}ms・閉鎖 ${Math.round(c)}ms・摩擦 ${Math.round(f)}ms）`, pos};
+    return {type:"tsu", label:`つ寄り（対象位置：破裂 ${Math.round(b)}ms・閉鎖 ${Math.round(c)}ms・摩擦 ${Math.round(f)}ms）`, pos};
   }
 
   if(hasWeakBurstWithClosure && f <= 160){
@@ -628,7 +679,7 @@ function guessSuTsu(m, pos){
     return {type:"su", label:`す寄り/要確認（閉鎖らしき区間はありますが、破裂が検出されません）`, pos};
   }
 
-  return {type:"su", label:`す寄り（破裂が検出されません・摩擦 ${Math.round(f)}ms）`, pos};
+  return {type:"su", label:`す寄り（対象位置に破裂が検出されません・摩擦 ${Math.round(f)}ms）`, pos};
 }
 
 function assessClosure(ms){
@@ -699,7 +750,7 @@ function buildDiagnosisHTML(guess, m){
       </ul>
       ${tailNote}
       ${headNote}
-      <p><b>v17の判定方針：</b>スマホ版では、閉鎖だけでは「つ」と判定していません。閉鎖のあとに破裂が検出されるかを重視しています。</p>
+      <p><b>v18の対象音探索：</b>語頭では最初の摩擦候補、語中・語末では最初の母音の後に現れる最初の摩擦候補を見ています。</p>
       ${burstWarn}
       <h3>解説</h3>
       <p>${explanation}</p>
@@ -768,7 +819,7 @@ function showMetrics(m){
   $("mRatio").textContent = m.fric ? m.ratio.toFixed(2) : "-";
   $("mCentroid").textContent = m.centroid ? Math.round(m.centroid) + " Hz" : "-";
   $("mHigh").textContent = m.highRatio ? Math.round(m.highRatio*100) + " %" : "-";
-  $("mBurst").textContent = (m.burstMs && m.burstMs >= 4) ? Math.round(m.burstMs) + " ms" : (m.weakBurst ? "弱い" : "検出なし");
+  $("mBurst").textContent = (m.burstMs && m.burstMs >= 5) ? Math.round(m.burstMs) + " ms" : (m.burstLike ? "あり" : (m.weakBurst ? "弱い" : "検出なし"));
 }
 
 function clearVisuals(){
