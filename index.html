@@ -75,7 +75,7 @@ canvas{width:100%;height:310px;background:white;border:1px solid var(--line);bor
 <body>
 <div class="wrap">
   <h1>つ・す 発音判定ツール v12.3</h1>
-  <p class="small">v18-position：出題語の位置情報を使って対象音を探す版です。録音後、無音が約0.8秒続くと自動停止し、自動判定します。分析表示は、録音全体ではなく、摩擦が強い対象音周辺に絞ります。</p>
+  <p class="small">v20-final-today：摩擦直前に隣接する短い静音だけを閉鎖とする版です。録音後、無音が約0.8秒続くと自動停止し、自動判定します。分析表示は、録音全体ではなく、摩擦が強い対象音周辺に絞ります。</p>
 
   <div class="tabs">
     <button class="tab active" id="tabPractice">ミニマルペア練習</button>
@@ -468,20 +468,19 @@ function mergeSegments(frames){
 }
 
 function findTargetRangeByPosition(segments, samples, sr, pos){
-  // v18-position:
-  // 出題語の位置情報を使う。
-  // head: 録音開始後に最初に現れる摩擦候補を見る。
-  // middle/tail: 最初の母音の後に現れる最初の摩擦候補を見る。
+  // v20:
+  // 出題語の位置情報を使って対象摩擦を選ぶ。
+  // head: 録音開始後の最初の摩擦候補
+  // middle/tail: 最初の母音の後に現れる最初の摩擦候補
+  // そのうえで、表示に含める閉鎖は「摩擦直前に隣接する短い静音」に限定する。
   const frics = segments.filter(s => s.label === "fric");
   if(!frics.length) return {start:0, end:samples.length/sr};
 
   let candidate = null;
 
   if(pos === "head"){
-    // 語頭は「最初の摩擦候補」。最強の摩擦ではない。
     candidate = frics[0];
   }else{
-    // 語中・語末は、最初の母音の後に出る最初の摩擦候補。
     const firstVowel = segments.find(s => s.label === "vowel");
     if(firstVowel){
       candidate = frics.find(s => s.start >= firstVowel.end - 0.01) || frics[0];
@@ -493,16 +492,23 @@ function findTargetRangeByPosition(segments, samples, sr, pos){
   const idx = segments.indexOf(candidate);
   let start = candidate.start;
 
-  // 直前の burst/closure を含める
   if(idx > 0 && segments[idx-1].label === "burst"){
     start = segments[idx-1].start;
     if(idx > 1 && segments[idx-2].label === "closure"){
-      start = Math.max(segments[idx-2].start, start - 0.08);
+      const cand = segments[idx-2];
+      const gap = segments[idx-1].start - cand.end;
+      const dur = cand.end - cand.start;
+      if(Math.abs(gap) < 0.012 && dur <= 0.09){
+        start = Math.max(cand.start, start - 0.08);
+      }
     }
   }else if(idx > 0 && segments[idx-1].label === "closure"){
-    start = Math.max(segments[idx-1].start, candidate.start - 0.08);
-  }else if(idx > 0 && segments[idx-1].label === "other" && (segments[idx-1].end - segments[idx-1].start) <= 0.035){
-    start = segments[idx-1].start;
+    const cand = segments[idx-1];
+    const gap = candidate.start - cand.end;
+    const dur = cand.end - cand.start;
+    if(Math.abs(gap) < 0.012 && dur <= 0.09){
+      start = Math.max(cand.start, candidate.start - 0.08);
+    }
   }
 
   let end = candidate.end;
@@ -514,7 +520,7 @@ function findTargetRangeByPosition(segments, samples, sr, pos){
   }
 
   if(end - start < 0.06) end = Math.min(samples.length/sr, start + 0.06);
-  return {start, end};
+  return {start,end};
 }
 
 function findTargetRange(segments, samples, sr){
@@ -566,7 +572,7 @@ function computeMetrics(samples, sr, segments){
   const frics = segments.filter(s => s.label === "fric");
   let fricSeg = frics[0] || null;
   if(frics.length){
-    // ここでは切り出し済み範囲内の最初の摩擦を見る。
+    // v20: 切り出し済み範囲内の最初の摩擦を対象音とする
     fricSeg = frics[0];
   }
 
@@ -579,17 +585,30 @@ function computeMetrics(samples, sr, segments){
   if(fricSeg){
     const idx = segments.indexOf(fricSeg);
 
+    // 摩擦直前の burst のみ破裂として数える
     if(idx > 0 && segments[idx-1].label === "burst"){
       burst = segments[idx-1].end - segments[idx-1].start;
       burstLike = burst >= 0.004;
     }
 
-    // 閉鎖は対象摩擦の直前に隣接するものだけ。
+    // v20の閉鎖定義：
+    // 「対象摩擦の直前に隣接する短い静音」だけを閉鎖とする。
+    // すり・すぎ等で、母音や後続音の前の弱まりを閉鎖と誤認しないため、
+    // 1) 摩擦の直前に隣接している
+    // 2) closureラベルである
+    // 3) 長すぎない（最大80ms）
+    // 4) burstがある場合はburstの直前を見る
     const closureIdx = burstLike ? idx - 2 : idx - 1;
-    if(closureIdx >= 0 && segments[closureIdx].label === "closure"){
-      closure = Math.min(segments[closureIdx].end - segments[closureIdx].start, 0.08);
+    if(closureIdx >= 0){
+      const cand = segments[closureIdx];
+      const gap = (burstLike ? segments[idx-1].start : fricSeg.start) - cand.end;
+      const dur = cand.end - cand.start;
+      if(cand.label === "closure" && Math.abs(gap) < 0.012 && dur <= 0.09){
+        closure = Math.min(dur, 0.08);
+      }
     }
 
+    // 摩擦開始直後の立ち上がりは補助情報のみ
     const fs = fricSeg.frames || [];
     if(fs.length >= 3){
       const first = fs.slice(0,2).reduce((a,f)=>a+f.en,0) / Math.min(2, fs.length);
@@ -654,32 +673,35 @@ function guessSuTsu(m, pos){
   const b = (m.burst || 0) * 1000;
   const f = m.fric * 1000;
 
-  const hasBurst = b >= 4 || m.burstLike;
   const hasClosure = c >= 10;
-  const hasWeakBurstWithClosure = m.weakBurst && hasClosure;
+  const clearClosure = c >= 18;
+  const hasBurst = b >= 4 || m.burstLike || m.weakBurst;
 
   if(f < 18){
     return {type:"unknown", label:"判定不能：対象位置に摩擦が十分検出されません", pos};
   }
 
-  // 「つ」は破裂を主根拠にする。閉鎖だけでは「つ」としない。
-  if(hasBurst && f <= 180){
-    return {type:"tsu", label:`つ寄り（対象位置：破裂 ${Math.round(b)}ms・閉鎖 ${Math.round(c)}ms・摩擦 ${Math.round(f)}ms）`, pos};
+  // v20:
+  // 閉鎖は「対象摩擦直前に隣接する短い静音」に限定済み。
+  // そのため、閉鎖が十分あれば「つ寄り」。
+  // ただし摩擦が長い場合は「っす寄り」。
+  if(clearClosure && f <= 170){
+    return {type:"tsu", label:`つ寄り（直前閉鎖 ${Math.round(c)}ms・摩擦 ${Math.round(f)}ms・破裂 ${Math.round(b)}ms）`, pos};
   }
 
-  if(hasWeakBurstWithClosure && f <= 160){
-    return {type:"tsu", label:`つ寄り（弱い破裂＋閉鎖 ${Math.round(c)}ms・摩擦 ${Math.round(f)}ms）`, pos};
+  if(hasClosure && hasBurst && f <= 180){
+    return {type:"tsu", label:`つ寄り（短い直前閉鎖＋破裂補助あり・摩擦 ${Math.round(f)}ms）`, pos};
   }
 
-  if((hasBurst || hasWeakBurstWithClosure) && f > 180){
-    return {type:"ssu", label:`っす寄り（破裂/閉鎖はありますが、摩擦が長め ${Math.round(f)}ms）`, pos};
+  if(clearClosure && f > 170){
+    return {type:"ssu", label:`っす寄り（直前閉鎖あり・摩擦が長め ${Math.round(f)}ms）`, pos};
   }
 
-  if(hasClosure && !hasBurst){
-    return {type:"su", label:`す寄り/要確認（閉鎖らしき区間はありますが、破裂が検出されません）`, pos};
+  if(!hasClosure && hasBurst){
+    return {type:"unknown", label:`要確認（破裂らしき音はありますが、直前閉鎖がほとんど検出されません）`, pos};
   }
 
-  return {type:"su", label:`す寄り（対象位置に破裂が検出されません・摩擦 ${Math.round(f)}ms）`, pos};
+  return {type:"su", label:`す寄り（対象摩擦の直前閉鎖が不足・摩擦 ${Math.round(f)}ms）`, pos};
 }
 
 function assessClosure(ms){
@@ -750,7 +772,7 @@ function buildDiagnosisHTML(guess, m){
       </ul>
       ${tailNote}
       ${headNote}
-      <p><b>v18の対象音探索：</b>語頭では最初の摩擦候補、語中・語末では最初の母音の後に現れる最初の摩擦候補を見ています。</p>
+      <p><b>v20の対象音探索：</b>語頭では最初の摩擦候補、語中・語末では最初の母音の後に現れる最初の摩擦候補を見ています。閉鎖は、その摩擦の直前に隣接する短い静音だけを数えます。</p>
       ${burstWarn}
       <h3>解説</h3>
       <p>${explanation}</p>
