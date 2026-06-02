@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>語頭 つ・す 教師用キャリブレーション v1</title>
+<title>語頭 つ・す 教師用キャリブレーション v2.1-copy</title>
 <style>
 :root{
   --bg:#f7f3ea;--card:#fffdf8;--ink:#2b2118;--muted:#756a5d;
@@ -49,10 +49,10 @@ th{background:#f1e7d8}
 </head>
 <body>
 <div class="wrap">
-<h1>語頭 つ・す 教師用キャリブレーション v1</h1>
+<h1>語頭 つ・す 教師用キャリブレーション v2.1-copy</h1>
 <p class="small">
 語頭の「す／つ」専用です。録音後に、実際に発音した音を「す」「つ」で入力してください。
-データをためると、固定パラメーター候補を自動計算します。学生用ではなく、教師が閾値を作るための調整版です。
+データをためると、固定パラメーター候補を自動計算します。音声もスマホ内のIndexedDBに保存します。CSVを画面表示・コピーできるようにしました。サーバーには送信しません。
 </p>
 
 <section class="card">
@@ -112,14 +112,22 @@ th{background:#f1e7d8}
 
 <section class="card">
   <h2>蓄積データ</h2>
-  <p class="small">ブラウザ内の localStorage に保存されます。同じ端末・同じブラウザなら残ります。</p>
+  <p class="small">特徴量はlocalStorage、音声はIndexedDBに保存されます。同じ端末・同じブラウザなら残ります。CSVを画面表示・コピーできるようにしました。サーバーには送信しません。</p>
   <div>
     <button id="clearBtn" class="bad">データを全削除</button>
     <button id="downloadBtn" class="secondary">CSVをダウンロード</button>
+    <button id="showCsvBtn" class="secondary">CSVを画面に表示</button>
+    <button id="copyCsvBtn" class="secondary">CSVをコピー</button>
+    <button id="downloadLastAudioBtn" class="secondary" disabled>最後の音声をダウンロード</button>
+    <button id="downloadAllAudioBtn" class="secondary">音声を順番にダウンロード</button>
   </div>
   <p id="countInfo" class="small">0件</p>
   <div style="overflow:auto;max-height:280px">
     <table id="dataTable"></table>
+  </div>
+  <div style="margin-top:12px">
+    <p class="small"><b>iPhone用：</b>「CSVを画面に表示」を押すと、下にCSV本文が出ます。長押し→全選択→コピー、または「CSVをコピー」を使ってください。</p>
+    <textarea id="csvTextBox" readonly placeholder="ここにCSV本文が表示されます。"></textarea>
   </div>
 </section>
 
@@ -141,14 +149,21 @@ const $=id=>document.getElementById(id);
 let stream=null,recorder=null,chunks=[],audioCtx=null,analyser=null,vadInterval=null,heardVoice=false,silenceStart=null;
 let lastMetrics=null;
 let samplesData = JSON.parse(localStorage.getItem("tsuSuCalibrationDataV1")||"[]");
+let lastAudioBlob = null;
+let lastAudioMime = "audio/webm";
+let dbPromise = openAudioDB();
 
 $("wordSelect").onchange=()=>{ $("displayWord").textContent=$("wordSelect").value; const w=$("wordSelect").value; $("labelSelect").value = w.startsWith("つ") ? "tsu" : "su"; };
 $("recordBtn").onclick=()=>startRecording();
 $("stopBtn").onclick=()=>stopRecording();
 $("saveSuBtn").onclick=()=>saveCurrent("su");
 $("saveTsuBtn").onclick=()=>saveCurrent("tsu");
-$("clearBtn").onclick=()=>{ if(confirm("全データを削除しますか？")){samplesData=[]; persist(); renderAll();} };
+$("clearBtn").onclick=()=>{ if(confirm("全データを削除しますか？")){samplesData=[]; persist(); clearAudioDB(); renderAll();} };
 $("downloadBtn").onclick=downloadCSV;
+$("showCsvBtn").onclick=showCSVText;
+$("copyCsvBtn").onclick=copyCSVText;
+$("downloadLastAudioBtn").onclick=downloadLastAudio;
+$("downloadAllAudioBtn").onclick=downloadAllAudioSequential;
 
 renderAll();
 
@@ -168,7 +183,7 @@ async function startRecording(){
     recorder.onstop=async()=>{
       stopVAD(); setButtons(false); $("status").textContent="解析中...";
       const blob=new Blob(chunks,{type:recorder.mimeType||"audio/webm"});
-      await analyzeBlob(blob);
+      lastAudioBlob = blob; lastAudioMime = blob.type || "audio/webm"; $("downloadLastAudioBtn").disabled=false; await analyzeBlob(blob);
     };
     recorder.start(); setButtons(true); startVAD();
     $("status").textContent="録音中。発音後、無音で自動停止します。";
@@ -220,21 +235,42 @@ async function analyzeBlob(blob){
   }
 }
 
-function saveCurrent(label){
+async function saveCurrent(label){
   if(!lastMetrics) return;
+  const id = makeSampleId(samplesData.length + 1);
   const item={
+    id,
     time:new Date().toISOString(),
     word:$("wordSelect").value,
     label,
+    audioFile:`${id}_${$("wordSelect").value}_${label}.${audioExt(lastAudioMime)}`,
     rise:+lastMetrics.rise.toFixed(4),
     fricMs:+lastMetrics.fricMs.toFixed(2),
     burst:+lastMetrics.burstScore.toFixed(4),
     centroid:+lastMetrics.centroid.toFixed(2),
     highRatio:+lastMetrics.highRatio.toFixed(4)
   };
-  samplesData.push(item);
-  persist(); renderAll();
-  $("status").textContent=`保存しました：${item.word} / ${label==="tsu"?"つ":"す"}（${samplesData.length}件）`;
+
+  try{
+    if(lastAudioBlob){
+      await saveAudioBlob(item.id, lastAudioBlob, item);
+    }
+    samplesData.push(item);
+    persist(); renderAll();
+    $("status").textContent=`保存しました：${item.word} / ${label==="tsu"?"つ":"す"}（${samplesData.length}件）`;
+  }catch(e){
+    console.error(e);
+    alert("音声保存に失敗しました: " + (e.message || e));
+  }
+}
+
+function makeSampleId(n){
+  return "sample_" + String(n).padStart(4,"0");
+}
+function audioExt(mime){
+  if((mime||"").includes("mp4")) return "m4a";
+  if((mime||"").includes("ogg")) return "ogg";
+  return "webm";
 }
 
 function persist(){localStorage.setItem("tsuSuCalibrationDataV1",JSON.stringify(samplesData));}
@@ -417,8 +453,8 @@ function renderAll(){
 function renderTable(){
   $("countInfo").textContent=`全${samplesData.length}件（す ${samplesData.filter(d=>d.label==="su").length}件／つ ${samplesData.filter(d=>d.label==="tsu").length}件）`;
   const rows=samplesData.slice(-80).reverse();
-  $("dataTable").innerHTML = `<tr><th>語</th><th>正解</th><th>立上</th><th>摩擦ms</th><th>破裂</th><th>重心Hz</th><th>高域</th></tr>`+
-    rows.map(d=>`<tr><td>${d.word}</td><td>${d.label==="tsu"?"つ":"す"}</td><td>${d.rise}</td><td>${d.fricMs}</td><td>${d.burst}</td><td>${Math.round(d.centroid)}</td><td>${d.highRatio}</td></tr>`).join("");
+  $("dataTable").innerHTML = `<tr><th>ID</th><th>語</th><th>正解</th><th>立上</th><th>摩擦ms</th><th>破裂</th><th>重心Hz</th><th>高域</th></tr>`+
+    rows.map(d=>`<tr><td>${d.id||""}</td><td>${d.word}</td><td>${d.label==="tsu"?"つ":"す"}</td><td>${d.rise}</td><td>${d.fricMs}</td><td>${d.burst}</td><td>${Math.round(d.centroid)}</td><td>${d.highRatio}</td></tr>`).join("");
 }
 function renderSummary(){
   const suN=samplesData.filter(d=>d.label==="su").length, tsuN=samplesData.filter(d=>d.label==="tsu").length;
@@ -440,13 +476,122 @@ function renderSummary(){
 }
 function fmt(x){return Number.isFinite(x)?(Math.abs(x)>50?x.toFixed(1):x.toFixed(3)):"-";}
 
-function downloadCSV(){
-  const header=["time","word","label","rise","fricMs","burst","centroid","highRatio"];
-  const lines=[header.join(",")].concat(samplesData.map(d=>header.map(k=>JSON.stringify(d[k]??"")).join(",")));
-  const blob=new Blob([lines.join("\n")],{type:"text/csv;charset=utf-8"});
+function openAudioDB(){
+  return new Promise((resolve,reject)=>{
+    const req = indexedDB.open("tsuSuAudioDB", 1);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if(!db.objectStoreNames.contains("audio")){
+        db.createObjectStore("audio", {keyPath:"id"});
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function saveAudioBlob(id, blob, meta){
+  const db = await dbPromise;
+  return new Promise((resolve,reject)=>{
+    const tx = db.transaction("audio","readwrite");
+    tx.objectStore("audio").put({id, blob, meta, mime:blob.type || "audio/webm"});
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function getAudioRecord(id){
+  const db = await dbPromise;
+  return new Promise((resolve,reject)=>{
+    const tx = db.transaction("audio","readonly");
+    const req = tx.objectStore("audio").get(id);
+    req.onsuccess = () => resolve(req.result || null);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function clearAudioDB(){
+  try{
+    const db = await dbPromise;
+    const tx = db.transaction("audio","readwrite");
+    tx.objectStore("audio").clear();
+  }catch(e){
+    console.warn(e);
+  }
+}
+
+function downloadBlob(blob, filename){
   const a=document.createElement("a");
-  a.href=URL.createObjectURL(blob); a.download="tsu_su_calibration.csv"; a.click();
-  URL.revokeObjectURL(a.href);
+  a.href=URL.createObjectURL(blob);
+  a.download=filename;
+  a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
+}
+
+function downloadLastAudio(){
+  if(!lastAudioBlob){
+    alert("まだ音声がありません。");
+    return;
+  }
+  const word = $("wordSelect").value || "recording";
+  const label = $("labelSelect").value || "unknown";
+  downloadBlob(lastAudioBlob, `last_${word}_${label}.${audioExt(lastAudioMime)}`);
+}
+
+async function downloadAllAudioSequential(){
+  if(!samplesData.length){
+    alert("保存データがありません。");
+    return;
+  }
+  alert("保存済み音声を順番にダウンロードします。ブラウザが複数ダウンロードの確認を出すことがあります。");
+  for(const d of samplesData){
+    const rec = await getAudioRecord(d.id);
+    if(rec && rec.blob){
+      downloadBlob(rec.blob, d.audioFile || `${d.id}.webm`);
+      await new Promise(r=>setTimeout(r, 500));
+    }
+  }
+}
+
+function makeCSVText(){
+  const header=["id","time","word","label","audioFile","rise","fricMs","burst","centroid","highRatio"];
+  const lines=[header.join(",")].concat(samplesData.map(d=>header.map(k=>csvCell(d[k]??"")).join(",")));
+  return lines.join("\n");
+}
+function csvCell(v){
+  const s=String(v);
+  return '"' + s.replace(/"/g,'""') + '"';
+}
+function showCSVText(){
+  const text = makeCSVText();
+  const box = $("csvTextBox");
+  box.value = text;
+  box.focus();
+  box.select();
+  $("status").textContent = `CSVを表示しました（${samplesData.length}件）。テキストボックスをコピーできます。`;
+}
+async function copyCSVText(){
+  const text = makeCSVText();
+  const box = $("csvTextBox");
+  box.value = text;
+  try{
+    await navigator.clipboard.writeText(text);
+    $("status").textContent = `CSVをコピーしました（${samplesData.length}件）。`;
+  }catch(e){
+    box.focus();
+    box.select();
+    $("status").textContent = "自動コピーできませんでした。下のCSVを長押ししてコピーしてください。";
+  }
+}
+
+function downloadCSV(){
+  const csv = makeCSVText();
+  const blob=new Blob([csv],{type:"text/csv;charset=utf-8"});
+  const a=document.createElement("a");
+  a.href=URL.createObjectURL(blob);
+  a.download="tsu_su_calibration.csv";
+  a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
 }
 
 function showMetrics(m){
